@@ -1,0 +1,116 @@
+#!/usr/bin/python
+#emacs: -*- mode: python-mode; py-indent-offset: 4; tab-width: 4; indent-tabs-mode: nil -*- 
+#ex: set sts=4 ts=4 sw=4 noet:
+#------------------------- =+- Python script -+= -------------------------
+"""
+ @file      travis-logs.py
+ @date      Wed Mar 27 15:20:16 2013
+ @brief
+
+ Created: Wed Mar 27 15:20:16 2013
+
+  Yaroslav Halchenko                                            Dartmouth
+  web:     http://www.onerussian.com                              College
+  e-mail:  yoh@onerussian.com                              ICQ#: 60653192
+
+ DESCRIPTION (NOTES):
+
+   A draft of a simple script to fetch all travis-ci build logs locally
+
+ COPYRIGHT: Yaroslav Halchenko 2013
+
+ LICENSE: MIT
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  THE SOFTWARE.
+"""
+#-----------------\____________________________________/------------------
+
+__author__ = 'Yaroslav Halchenko'
+__copyright__ = 'Copyright (c) 2013 Yaroslav Halchenko'
+__license__ = 'MIT'
+
+# apt-get install python-git
+
+import glob, json, re, sys, os, urllib2
+from git import Repo
+
+if __name__ == "__main__":
+    topdir = os.getcwd()                  # for now
+
+    repo = Repo(topdir)
+
+    remotes = sys.argv[1:] or ['origin']
+
+    for r in remotes:                 # for now
+        remote = repo.remote(r)
+        url = remote.url
+
+        if not 'github.' in url:          # for now
+            continue
+
+        # strip off the url, might be github.com: for anonymous
+        # git:// protocol
+        owner_project = re.sub('.*github\.com.', '', url)
+        owner_project = re.sub('.git$','', owner_project)
+        #topurl = 'http://travis-ci.org/%(owner_project)s' % locals()
+        topurl = 'https://api.travis-ci.org/repos/%(owner_project)s' % locals()
+
+        def fetch(loc):
+            # now fetch information on all the builds
+            url = '%s/%s' % (topurl, loc) 
+            try:
+                lines = urllib2.urlopen(url).readlines()
+            except urllib2.HTTPError, e:
+                print "E: url %(url)s lead to %(e)s" % locals()
+                raise
+            assert(len(lines) == 1)
+            return json.loads(lines[0])
+
+        builds_dir = os.path.join(topdir, '.git', 'travis-ci', r, )
+        if not os.path.exists(builds_dir):
+            os.makedirs(builds_dir)
+        print "I: ", builds_dir
+
+        for build in fetch('builds.json'):
+            print "build #: %(number)s" % build,
+            # .txt* at the end for .gz
+            build_logs = glob.glob(os.path.join(builds_dir, '%(number)s.*-*.txt*' % build))
+            if len(build_logs):
+                print " skipping - %d files exist" % (len(build_logs))
+                continue
+            print " fetching",
+            # fetch information on that build
+            build_info = fetch('builds/%(id)s.json' % build)
+            if 'matrix' in build_info:
+                for b in build_info['matrix']:
+                    #b['number_index'] = b['number'].split('.', 2)[1:]
+                    logfile = '%(number)s-%(result)s.txt' % b
+                    logurl = 'https://api.travis-ci.org/jobs/%(id)s/log' % b
+                    hdr = {'Accept': 'application/vnd.travis-ci.2+json, */*; q=0.01'}
+
+                    try:
+                        r = urllib2.Request(logurl, headers=hdr)
+                        log = urllib2.urlopen(r).read()
+                    except urllib2.HTTPError, e:
+                        print " failed to fetch %s: %s" % (logurl, e)
+                        continue
+                    open(os.path.join(builds_dir, logfile),'w').write(log)
+                    print " ", logfile,
+                print
+                # break
