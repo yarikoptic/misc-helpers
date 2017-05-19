@@ -82,35 +82,59 @@ if __name__ == "__main__":
             assert(len(lines) == 1)
             return json.loads(lines[0])
 
+        def request(req, hdr=None, json_=False):
+            url = 'https://api.travis-ci.org/' + req
+            header = {'Accept': 'application/vnd.travis-ci.2+json, */*; q=0.01'}
+            #header.update(hdr)
+		    url += ('?' + '&'.join('%s=%s'%x for x in hdr.items())) if hdr else ''
+            #print("Requesting %s" % url)
+            try:
+                r = urllib2.Request(url, headers=header)
+                txt = urllib2.urlopen(r).read()
+            except urllib2.HTTPError, e:
+                print " failed to fetch %s: %s" % (url, e)
+                return None
+            if json_:
+                return json.loads(txt)
+            return txt
+
         builds_dir = os.path.join(topdir, '.git', 'travis-ci', r, )
         if not os.path.exists(builds_dir):
             os.makedirs(builds_dir)
         print "I: ", builds_dir
 
-        for build in fetch('builds.json'):
-            print "build #: %(number)s" % build,
-            # .txt* at the end for .gz
-            build_logs = glob.glob(os.path.join(builds_dir, '%(number)s.*-*.txt*' % build))
-            if len(build_logs):
-                print " skipping - %d files exist" % (len(build_logs))
-                continue
-            print " fetching",
-            # fetch information on that build
-            build_info = fetch('builds/%(id)s.json' % build)
-            if 'matrix' in build_info:
-                for b in build_info['matrix']:
-                    #b['number_index'] = b['number'].split('.', 2)[1:]
-                    logfile = '%(number)s-%(result)s.txt' % b
-                    logurl = 'https://api.travis-ci.org/jobs/%(id)s/log' % b
-                    hdr = {'Accept': 'application/vnd.travis-ci.2+json, */*; q=0.01'}
+        # for pagination of requests
+        last_build = None
+        while True:
+            print "Last build: %s" % last_build
+            builds = request(
+                'repos/%(owner_project)s/builds' % locals(),
+                hdr={'after_number': last_build} if last_build else {},
+                json_=True
+            )['builds']
+            if not builds:
+                break
 
-                    try:
-                        r = urllib2.Request(logurl, headers=hdr)
-                        log = urllib2.urlopen(r).read()
-                    except urllib2.HTTPError, e:
-                        print " failed to fetch %s: %s" % (logurl, e)
-                        continue
-                    open(os.path.join(builds_dir, logfile),'w').write(log)
-                    print " ", logfile,
-                print
-                # break
+            for build in builds:
+                
+                last_build = build['number']
+                print "build #: %(number)s" % build,
+                # .txt* at the end for .gz
+                build_logs = glob.glob(os.path.join(builds_dir, '%(number)s.*-*.txt*' % build))
+                if len(build_logs):
+                    print " skipping - %d files exist" % (len(build_logs))
+                    continue
+                print " fetching",
+                # fetch information on that build
+                build_info = fetch('builds/%(id)s.json' % build)
+                if 'matrix' in build_info:
+                    for b in build_info['matrix']:
+                        #b['number_index'] = b['number'].split('.', 2)[1:]
+                        logfile = '%(number)s-%(result)s.txt' % b
+                        log = request('jobs/%(id)s/log' % b)
+                        if not log:
+                            continue
+                        open(os.path.join(builds_dir, logfile),'w').write(log)
+                        print " ", logfile,
+                    print
+                    # break
