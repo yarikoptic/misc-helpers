@@ -49,6 +49,7 @@ __license__ = 'MIT'
 
 import glob, json, re, sys, os, urllib2
 from git import Repo
+from time import sleep
 
 if __name__ == "__main__":
     topdir = os.getcwd()                  # for now
@@ -89,8 +90,19 @@ if __name__ == "__main__":
 		    url += ('?' + '&'.join('%s=%s'%x for x in hdr.items())) if hdr else ''
             #print("Requesting %s" % url)
             try:
-                r = urllib2.Request(url, headers=header)
-                txt = urllib2.urlopen(r).read()
+                # we will do a few  independent attempts
+                txt = None
+                for attempt in range(7):
+                    try:
+                        r = urllib2.Request(url, headers=header)
+                        txt = urllib2.urlopen(r).read()
+                        break
+                    except urllib2.URLError as exc:
+                        if exc.reason.errno != 110:
+                            break
+                    sleep(2**attempt)
+                if txt is None:
+                    raise RuntimeError("Failed to download %s on 7 attempts" % url)
             except urllib2.HTTPError, e:
                 print " failed to fetch %s: %s" % (url, e)
                 return None
@@ -120,7 +132,10 @@ if __name__ == "__main__":
                 last_build = build['number']
                 print "build #: %(number)s" % build,
                 # .txt* at the end for .gz
-                build_logs = glob.glob(os.path.join(builds_dir, '%(number)s.*-*.txt*' % build))
+                logdir = os.path.join(builds_dir, '%(number)s' % build)
+                if not os.path.exists(logdir):
+                    os.makedirs(logdir)
+                build_logs = glob.glob(os.path.join(logdir, '*-*.txt*'))
                 if len(build_logs):
                     print " skipping - %d files exist" % (len(build_logs))
                     continue
@@ -129,12 +144,22 @@ if __name__ == "__main__":
                 build_info = fetch('builds/%(id)s.json' % build)
                 if 'matrix' in build_info:
                     for b in build_info['matrix']:
+                        b['matrix_number'] = b['number'].split('.', 1)[-1]
                         #b['number_index'] = b['number'].split('.', 2)[1:]
-                        logfile = '%(number)s-%(result)s.txt' % b
-                        log = request('jobs/%(id)s/log' % b)
+                        logfile = '%(matrix_number)s-%(result)s.txt' % b
+                        try:
+                             log = request('jobs/%(id)s/log' % b)
+                        except RuntimeError as exc:
+                             print("Skipping %s:%s due to %s" % (build, b, str(exc)))
+                             log = None
                         if not log:
                             continue
-                        open(os.path.join(builds_dir, logfile),'w').write(log)
+                        if log.startswith('{') and '"body":""' in log:
+                            # TODO: do it for the entire build since then otherwise we would skip it later
+                            #  so we might want first to fetch all logs before saving them
+                            print("Skipping since not yet there")
+                            continue
+                        open(os.path.join(logdir, logfile),'w').write(log)
                         print " ", logfile,
                     print
                     # break
